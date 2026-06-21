@@ -48,6 +48,10 @@ def parse_args():
                    help="HF repo id for checkpoints, e.g. you/imagenet-proxy-ckpts")
     p.add_argument("--no-resume", action="store_true",
                    help="Ignore any existing checkpoint and start fresh.")
+    p.add_argument("--save-every", type=int, default=5,
+                   help="Upload checkpoints every N epochs (plus the final epoch). "
+                        "Each upload is one HF commit and HF caps commits at "
+                        "128/hour, so keep this > 1 for fast epochs.")
     p.add_argument("--tensorboard", action="store_true",
                    help="Log loss/acc/lr curves to --logdir for TensorBoard.")
     p.add_argument("--logdir", type=str, default="runs",
@@ -145,6 +149,8 @@ def main():
         else:
             print(f"No checkpoint for '{run}' — starting fresh.")
 
+    best_state = None
+    best_dirty = False
     for epoch in range(start_epoch, args.epochs):
         loss = train_one_epoch(model, train_loader, optimizer, scaler,
                                device, use_amp, epoch)
@@ -157,19 +163,37 @@ def main():
             writer.add_scalar("val/acc", acc, epoch)
             writer.add_scalar("lr", lr, epoch)
 
-        state = {
-            "epoch": epoch,
-            "model": model.state_dict(),
-            "optimizer": optimizer.state_dict(),
-            "scheduler": scheduler.state_dict(),
-            "scaler": scaler.state_dict(),
-            "best_acc": max(best_acc, acc),
-        }
-        ckpt.save(state, last_ckpt, commit_message=f"{run} epoch {epoch} acc={acc:.4f}")
+        # Track the best weights in memory; defer the upload to the throttle below
+        # so we stay under HF's 128-commits/hour limit.
         if acc > best_acc:
             best_acc = acc
-            ckpt.save(state, best_ckpt,
-                      commit_message=f"{run} best epoch {epoch} acc={acc:.4f}")
+            best_state = {
+                "epoch": epoch,
+                "model": {k: v.detach().cpu() for k, v in model.state_dict().items()},
+                "best_acc": best_acc,
+            }
+            best_dirty = True
+
+        # Upload only every --save-every epochs (and on the final epoch).
+        if (epoch + 1) % args.save_every == 0 or epoch == args.epochs - 1:
+            state = {
+                "epoch": epoch,
+                "model": model.state_dict(),
+                "optimizer": optimizer.state_dict(),
+                "scheduler": scheduler.state_dict(),
+                "scaler": scaler.state_dict(),
+                "best_acc": best_acc,
+            }
+            try:
+                ckpt.save(state, last_ckpt,
+                          commit_message=f"{run} epoch {epoch} acc={acc:.4f}")
+                if best_dirty:
+                    ckpt.save(best_state, best_ckpt,
+                              commit_message=f"{run} best epoch {best_state['epoch']} "
+                                             f"acc={best_acc:.4f}")
+                    best_dirty = False
+            except Exception as e:  # don't let a transient rate-limit kill training
+                print(f"  [warn] checkpoint upload skipped: {e}")
 
     if writer:
         writer.close()

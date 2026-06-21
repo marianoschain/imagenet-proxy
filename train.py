@@ -42,6 +42,10 @@ def parse_args():
                    help="Log loss/acc/lr curves to --logdir for TensorBoard.")
     p.add_argument("--logdir", type=str, default="runs",
                    help="Directory for TensorBoard event files.")
+    p.add_argument("--run-name", type=str, default="run",
+                   help="Names this experiment's checkpoints, e.g. resnet_a -> "
+                        "resnet_a_last.pt / resnet_a_best.pt. Use a fresh name for a "
+                        "new architecture so runs don't overwrite each other.")
     return p.parse_args()
 
 
@@ -84,7 +88,9 @@ def main():
     args = parse_args()
     device = "cuda" if torch.cuda.is_available() else "cpu"
     use_amp = device == "cuda"
-    print(f"Device: {device} | AMP: {use_amp}")
+    run = args.run_name.strip().replace(" ", "_")
+    last_ckpt, best_ckpt = f"{run}_last.pt", f"{run}_best.pt"
+    print(f"Run: {run} | Device: {device} | AMP: {use_amp}")
 
     token = os.environ.get("HF_TOKEN")
     if not token:
@@ -108,14 +114,14 @@ def main():
     if args.tensorboard:
         try:
             from torch.utils.tensorboard import SummaryWriter
-            writer = SummaryWriter(args.logdir)
-            print(f"TensorBoard logging to ./{args.logdir}")
+            writer = SummaryWriter(os.path.join(args.logdir, run))
+            print(f"TensorBoard logging to ./{args.logdir}/{run}")
         except Exception as e:  # never let logging break training
             print(f"TensorBoard logging disabled ({e})")
 
     start_epoch, best_acc = 0, 0.0
     if not args.no_resume:
-        state = ckpt.load("last.pt", map_location=device)
+        state = ckpt.load(last_ckpt, map_location=device)
         if state is not None:
             model.load_state_dict(state["model"])
             optimizer.load_state_dict(state["optimizer"])
@@ -123,9 +129,9 @@ def main():
             scaler.load_state_dict(state["scaler"])
             start_epoch = state["epoch"] + 1
             best_acc = state.get("best_acc", 0.0)
-            print(f"Resumed at epoch {start_epoch} | best_acc={best_acc:.4f}")
+            print(f"Resumed '{run}' at epoch {start_epoch} | best_acc={best_acc:.4f}")
         else:
-            print("No checkpoint found — starting fresh.")
+            print(f"No checkpoint for '{run}' — starting fresh.")
 
     for epoch in range(start_epoch, args.epochs):
         loss = train_one_epoch(model, train_loader, optimizer, scaler,
@@ -147,10 +153,11 @@ def main():
             "scaler": scaler.state_dict(),
             "best_acc": max(best_acc, acc),
         }
-        ckpt.save(state, "last.pt", commit_message=f"epoch {epoch} acc={acc:.4f}")
+        ckpt.save(state, last_ckpt, commit_message=f"{run} epoch {epoch} acc={acc:.4f}")
         if acc > best_acc:
             best_acc = acc
-            ckpt.save(state, "best.pt", commit_message=f"best epoch {epoch} acc={acc:.4f}")
+            ckpt.save(state, best_ckpt,
+                      commit_message=f"{run} best epoch {epoch} acc={acc:.4f}")
 
     if writer:
         writer.close()

@@ -57,7 +57,7 @@ class PatchBasedModel(nn.Module):
     """
 
     def __init__(self, num_classes=10, num_blocks=4, hidden_features=128, patch_size=8,
-                 train_random_conv=False, attn_pool=False):
+                 train_random_conv=False, attn_pool=False, downsample=1):
         super().__init__()
         self.num_classes = num_classes
         self.num_blocks = num_blocks
@@ -68,6 +68,14 @@ class PatchBasedModel(nn.Module):
 
         # Initial projection per patch: (3, H, W) -> (hidden_features, H, W)
         self.initial_proj = nn.Conv2d(3, hidden_features, kernel_size=1, padding=0)
+
+        # Optional spatial downsampling right after the projection, before the
+        # (expensive) conv blocks. Since patches are mean-pooled over space at the
+        # end anyway, running the blocks at lower resolution cuts FLOPs ~quadratically
+        # with little effect on the pooled representation. ceil_mode keeps it valid
+        # for patch sizes not divisible by the factor.
+        self.downsample = (nn.AvgPool2d(downsample, ceil_mode=True)
+                           if downsample > 1 else None)
 
         # Processing blocks with batch norm
         self.blocks = nn.ModuleList([
@@ -111,6 +119,10 @@ class PatchBasedModel(nn.Module):
 
         # Initial projection: (B*num_patches, 3, ph, pw) -> (B*num_patches, F, ph, pw)
         x = self.initial_proj(patches_flat)
+
+        # Optional downsample before the conv blocks to save compute.
+        if self.downsample is not None:
+            x = self.downsample(x)
 
         # Process through blocks with residual connections
         for block, bn in zip(self.blocks, self.batch_norms):
@@ -185,7 +197,7 @@ class PatchBasedModel(nn.Module):
 
 
 def build_model(num_classes=10, patch_size=8, train_random_conv=False, num_blocks=4,
-                attn_pool=False):
+                attn_pool=False, hidden_features=128, downsample=1):
     """Single entry point used by train.py.
 
     Args:
@@ -198,7 +210,12 @@ def build_model(num_classes=10, patch_size=8, train_random_conv=False, num_block
         attn_pool: If True, pool patches with learned attention weights instead of
             a plain mean, letting the model focus on object-bearing patches
             (default: False).
+        hidden_features: Channel width of the conv body. Compute scales ~with the
+            square of this, so halving it (128 -> 64) cuts FLOPs ~4x (default: 128).
+        downsample: Spatial downsampling factor applied before the conv blocks;
+            >1 cuts per-block FLOPs ~quadratically (default: 1, i.e. none).
     """
     return PatchBasedModel(num_classes=num_classes, patch_size=patch_size,
                            train_random_conv=train_random_conv, num_blocks=num_blocks,
-                           attn_pool=attn_pool)
+                           attn_pool=attn_pool, hidden_features=hidden_features,
+                           downsample=downsample)

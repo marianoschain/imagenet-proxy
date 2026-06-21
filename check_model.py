@@ -13,6 +13,10 @@ DATASET_CONFIGS = {
 parser = argparse.ArgumentParser()
 parser.add_argument("--num-blocks", type=int, default=4,
                     help="Number of residual processing blocks.")
+parser.add_argument("--hidden-features", type=int, default=128,
+                    help="Conv channel width (compute scales ~with its square).")
+parser.add_argument("--downsample", type=int, default=1,
+                    help="Spatial downsample factor before the conv blocks.")
 parser.add_argument("--train-random-conv", action="store_true",
                     help="Train the per-block 'random' convs instead of freezing.")
 parser.add_argument("--attn-pool", action="store_true",
@@ -24,7 +28,9 @@ def check(name, cfg):
     model = build_model(num_classes=cfg["num_classes"], num_blocks=args.num_blocks,
                         patch_size=cfg["patch_size"],
                         train_random_conv=args.train_random_conv,
-                        attn_pool=args.attn_pool)
+                        attn_pool=args.attn_pool,
+                        hidden_features=args.hidden_features,
+                        downsample=args.downsample)
     model.train()
 
     x = torch.randn(2, 3, cfg["img_size"], cfg["img_size"])

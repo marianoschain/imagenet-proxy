@@ -43,6 +43,12 @@ def parse_args():
     p.add_argument("--num-blocks", type=int, default=4,
                    help="Number of residual processing blocks; trainable params "
                         "scale ~linearly with this.")
+    p.add_argument("--hidden-features", type=int, default=128,
+                   help="Conv channel width. Compute scales ~with its square, so "
+                        "64 cuts FLOPs ~4x vs the 128 default.")
+    p.add_argument("--downsample", type=int, default=1,
+                   help="Spatial downsample factor before the conv blocks; >1 cuts "
+                        "per-block FLOPs ~quadratically (e.g. 2 -> ~4x less).")
     p.add_argument("--attn-pool", action="store_true",
                    help="Pool patches with learned attention weights instead of a "
                         "plain mean (focuses on object-bearing patches).")
@@ -135,7 +141,9 @@ def main():
     print(f"Dataset: {args.dataset} | classes: {num_classes} | img_size: {args.img_size}")
     model = build_model(num_classes=num_classes, patch_size=args.patch_size,
                         train_random_conv=args.train_random_conv,
-                        num_blocks=args.num_blocks, attn_pool=args.attn_pool).to(device)
+                        num_blocks=args.num_blocks, attn_pool=args.attn_pool,
+                        hidden_features=args.hidden_features,
+                        downsample=args.downsample).to(device)
     if args.channels_last:
         model = model.to(memory_format=torch.channels_last)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr,

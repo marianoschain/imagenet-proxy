@@ -16,18 +16,19 @@ class PatchProcessingBlock(nn.Module):
     - Trainable 2D conv (zero-initialized)
     """
 
-    def __init__(self, features, kernel_size=3, activation=None):
+    def __init__(self, features, kernel_size=3, activation=None,
+                 train_random_conv=False):
         super().__init__()
         self.activation = activation or nn.ReLU()
 
-        # Random conv (will be frozen)
+        # Random conv: frozen by default, or trainable if train_random_conv=True.
         self.random_conv = nn.Conv2d(
             features, features, kernel_size,
             padding=kernel_size // 2, bias=True
         )
-        # Freeze random conv
-        for param in self.random_conv.parameters():
-            param.requires_grad = False
+        if not train_random_conv:
+            for param in self.random_conv.parameters():
+                param.requires_grad = False
 
         # Trainable conv (zero-initialized for near-identity at start)
         self.trainable_conv = nn.Conv2d(
@@ -55,19 +56,22 @@ class PatchBasedModel(nn.Module):
     aggregates, and classifies.
     """
 
-    def __init__(self, num_classes=10, num_blocks=4, hidden_features=128, patch_size=8):
+    def __init__(self, num_classes=10, num_blocks=4, hidden_features=128, patch_size=8,
+                 train_random_conv=False):
         super().__init__()
         self.num_classes = num_classes
         self.num_blocks = num_blocks
         self.hidden_features = hidden_features
         self.patch_size = patch_size
+        self.train_random_conv = train_random_conv
 
         # Initial projection per patch: (3, H, W) -> (hidden_features, H, W)
         self.initial_proj = nn.Conv2d(3, hidden_features, kernel_size=1, padding=0)
 
         # Processing blocks with batch norm
         self.blocks = nn.ModuleList([
-            PatchProcessingBlock(hidden_features, kernel_size=3)
+            PatchProcessingBlock(hidden_features, kernel_size=3,
+                                 train_random_conv=train_random_conv)
             for _ in range(num_blocks)
         ])
 
@@ -166,11 +170,14 @@ class PatchBasedModel(nn.Module):
         return x
 
 
-def build_model(num_classes=10, patch_size=8):
+def build_model(num_classes=10, patch_size=8, train_random_conv=False):
     """Single entry point used by train.py.
 
     Args:
         num_classes: Number of output classes (default: 10 for Imagenette)
         patch_size: Size of square patches (8, 16, or 32; default: 8)
+        train_random_conv: If True, the per-block "random" convs are trainable
+            instead of frozen (default: False).
     """
-    return PatchBasedModel(num_classes=num_classes, patch_size=patch_size)
+    return PatchBasedModel(num_classes=num_classes, patch_size=patch_size,
+                           train_random_conv=train_random_conv)

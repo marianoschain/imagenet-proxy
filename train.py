@@ -34,6 +34,8 @@ def parse_args():
     p.add_argument("--img-size", type=int, default=160)
     p.add_argument("--patch-size", type=int, default=8,
                    help="Square patch size; must divide --img-size (e.g. 8, 16, 32).")
+    p.add_argument("--train-random-conv", action="store_true",
+                   help="Train the per-block 'random' convs instead of freezing them.")
     p.add_argument("--num-workers", type=int, default=2)
     p.add_argument("--data-root", type=str, default="./data")
     p.add_argument("--out-repo", type=str, required=True,
@@ -106,7 +108,8 @@ def main():
         root=args.data_root, img_size=args.img_size,
         batch_size=args.batch_size, num_workers=args.num_workers,
     )
-    model = build_model(num_classes=num_classes, patch_size=args.patch_size).to(device)
+    model = build_model(num_classes=num_classes, patch_size=args.patch_size,
+                        train_random_conv=args.train_random_conv).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr,
                                   weight_decay=args.weight_decay)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)

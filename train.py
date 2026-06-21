@@ -14,10 +14,15 @@ import os
 import torch
 import torch.nn as nn
 from torch.amp import autocast, GradScaler
+from tqdm.auto import tqdm
+from huggingface_hub.utils import disable_progress_bars
 
 from data import build_loaders
 from model import build_model
 from hf_checkpoint import HFCheckpoint
+
+# Stop huggingface_hub from printing an upload progress bar on every checkpoint save.
+disable_progress_bars()
 
 
 def parse_args():
@@ -33,13 +38,20 @@ def parse_args():
                    help="HF repo id for checkpoints, e.g. you/imagenet-proxy-ckpts")
     p.add_argument("--no-resume", action="store_true",
                    help="Ignore any existing checkpoint and start fresh.")
+    p.add_argument("--tensorboard", action="store_true",
+                   help="Log loss/acc/lr curves to --logdir for TensorBoard.")
+    p.add_argument("--logdir", type=str, default="runs",
+                   help="Directory for TensorBoard event files.")
     return p.parse_args()
 
 
-def train_one_epoch(model, loader, optimizer, scaler, device, use_amp):
+def train_one_epoch(model, loader, optimizer, scaler, device, use_amp, epoch):
     model.train()
     running, seen = 0.0, 0
-    for images, targets in loader:
+    # leave=False makes this bar erase itself when the epoch ends, so only the
+    # one-line summary printed in main() persists — no scroll buildup.
+    pbar = tqdm(loader, desc=f"epoch {epoch}", leave=False, dynamic_ncols=True)
+    for images, targets in pbar:
         images = images.to(device, non_blocking=True)
         targets = targets.to(device, non_blocking=True)
         optimizer.zero_grad(set_to_none=True)
@@ -51,6 +63,7 @@ def train_one_epoch(model, loader, optimizer, scaler, device, use_amp):
         scaler.update()
         running += loss.item() * images.size(0)
         seen += images.size(0)
+        pbar.set_postfix(loss=f"{running / seen:.3f}")
     return running / max(seen, 1)
 
 
@@ -91,6 +104,15 @@ def main():
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
     scaler = GradScaler("cuda", enabled=use_amp)
 
+    writer = None
+    if args.tensorboard:
+        try:
+            from torch.utils.tensorboard import SummaryWriter
+            writer = SummaryWriter(args.logdir)
+            print(f"TensorBoard logging to ./{args.logdir}")
+        except Exception as e:  # never let logging break training
+            print(f"TensorBoard logging disabled ({e})")
+
     start_epoch, best_acc = 0, 0.0
     if not args.no_resume:
         state = ckpt.load("last.pt", map_location=device)
@@ -106,11 +128,16 @@ def main():
             print("No checkpoint found — starting fresh.")
 
     for epoch in range(start_epoch, args.epochs):
-        loss = train_one_epoch(model, train_loader, optimizer, scaler, device, use_amp)
+        loss = train_one_epoch(model, train_loader, optimizer, scaler,
+                               device, use_amp, epoch)
         acc = validate(model, val_loader, device)
         scheduler.step()
-        print(f"epoch {epoch:3d} | loss {loss:.4f} | val_acc {acc:.4f} | "
-              f"lr {scheduler.get_last_lr()[0]:.2e}")
+        lr = scheduler.get_last_lr()[0]
+        print(f"epoch {epoch:3d} | loss {loss:.4f} | val_acc {acc:.4f} | lr {lr:.2e}")
+        if writer:
+            writer.add_scalar("train/loss", loss, epoch)
+            writer.add_scalar("val/acc", acc, epoch)
+            writer.add_scalar("lr", lr, epoch)
 
         state = {
             "epoch": epoch,
@@ -125,6 +152,8 @@ def main():
             best_acc = acc
             ckpt.save(state, "best.pt", commit_message=f"best epoch {epoch} acc={acc:.4f}")
 
+    if writer:
+        writer.close()
     print(f"Done. Best val_acc={best_acc:.4f}")
 
 

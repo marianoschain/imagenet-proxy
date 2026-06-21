@@ -125,9 +125,11 @@ class PatchBasedModel(nn.Module):
         _, C, ph, pw = x.shape
         x = x.reshape(batch_size, num_patches, C, ph, pw)
 
-        # Aggregate patches by summing spatial dimensions
+        # Aggregate patches by averaging spatial dimensions. Mean (not sum) keeps
+        # feature magnitude independent of patch area, so logit scale — and thus
+        # the right LR — stays comparable across patch sizes (8/16/32).
         # (B, num_patches, F, ph, pw) -> (B, num_patches, F)
-        x = torch.sum(x, dim=(3, 4))  # Sum over patch spatial dims
+        x = torch.mean(x, dim=(3, 4))  # Mean over patch spatial dims
 
         # Average over patches
         # (B, num_patches, F) -> (B, F)

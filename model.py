@@ -172,7 +172,7 @@ class PatchBasedModel(nn.Module):
         return x
 
 
-def build_model(num_classes=10, patch_size=8, train_random_conv=False):
+def build_model(num_classes=10, patch_size=8, train_random_conv=False, num_blocks=4):
     """Single entry point used by train.py.
 
     Args:
@@ -180,6 +180,8 @@ def build_model(num_classes=10, patch_size=8, train_random_conv=False):
         patch_size: Size of square patches (8, 16, or 32; default: 8)
         train_random_conv: If True, the per-block "random" convs are trainable
             instead of frozen (default: False).
+        num_blocks: Number of residual processing blocks; trainable params scale
+            ~linearly with this (default: 4).
     """
     return PatchBasedModel(num_classes=num_classes, patch_size=patch_size,
-                           train_random_conv=train_random_conv)
+                           train_random_conv=train_random_conv, num_blocks=num_blocks)

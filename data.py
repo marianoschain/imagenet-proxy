@@ -123,8 +123,13 @@ def build_loaders(root="./data", dataset="imagenette", img_size=160,
         train_ds, val_ds, num_classes = _build_hf_datasets(
             dataset, root, train_tf, val_tf)
 
-    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True,
-                              num_workers=num_workers, pin_memory=True, drop_last=True)
-    val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False,
-                            num_workers=num_workers, pin_memory=True)
+    loader_kwargs = dict(batch_size=batch_size, num_workers=num_workers, pin_memory=True)
+    if num_workers > 0:
+        # Keep workers alive between epochs and let them stage batches ahead so the
+        # GPU isn't starved waiting on JPEG decode + augmentation.
+        loader_kwargs["persistent_workers"] = True
+        loader_kwargs["prefetch_factor"] = 4
+
+    train_loader = DataLoader(train_ds, shuffle=True, drop_last=True, **loader_kwargs)
+    val_loader = DataLoader(val_ds, shuffle=False, **loader_kwargs)
     return train_loader, val_loader, num_classes

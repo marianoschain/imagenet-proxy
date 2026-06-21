@@ -46,7 +46,14 @@ def parse_args():
     p.add_argument("--attn-pool", action="store_true",
                    help="Pool patches with learned attention weights instead of a "
                         "plain mean (focuses on object-bearing patches).")
-    p.add_argument("--num-workers", type=int, default=2)
+    p.add_argument("--num-workers", type=int, default=2,
+                   help="DataLoader workers. Raise (e.g. 8) on a fast GPU so data "
+                        "loading doesn't starve it.")
+    p.add_argument("--compile", action="store_true",
+                   help="Wrap the model in torch.compile for a faster compute path "
+                        "(first step is slow while it compiles).")
+    p.add_argument("--channels-last", action="store_true",
+                   help="Use channels_last memory format (better tensor-core use).")
     p.add_argument("--data-root", type=str, default="./data")
     p.add_argument("--out-repo", type=str, required=True,
                    help="HF repo id for checkpoints, e.g. you/imagenet-proxy-ckpts")
@@ -67,14 +74,16 @@ def parse_args():
     return p.parse_args()
 
 
-def train_one_epoch(model, loader, optimizer, scaler, device, use_amp, epoch):
+def train_one_epoch(model, loader, optimizer, scaler, device, use_amp, epoch,
+                    channels_last=False):
     model.train()
     running, seen = 0.0, 0
+    mem_fmt = torch.channels_last if channels_last else torch.contiguous_format
     # leave=False makes this bar erase itself when the epoch ends, so only the
     # one-line summary printed in main() persists — no scroll buildup.
     pbar = tqdm(loader, desc=f"epoch {epoch}", leave=False, dynamic_ncols=True)
     for images, targets in pbar:
-        images = images.to(device, non_blocking=True)
+        images = images.to(device, non_blocking=True, memory_format=mem_fmt)
         targets = targets.to(device, non_blocking=True)
         optimizer.zero_grad(set_to_none=True)
         with autocast("cuda", enabled=use_amp):
@@ -90,11 +99,12 @@ def train_one_epoch(model, loader, optimizer, scaler, device, use_amp, epoch):
 
 
 @torch.no_grad()
-def validate(model, loader, device):
+def validate(model, loader, device, channels_last=False):
     model.eval()
+    mem_fmt = torch.channels_last if channels_last else torch.contiguous_format
     correct, total = 0, 0
     for images, targets in loader:
-        images = images.to(device, non_blocking=True)
+        images = images.to(device, non_blocking=True, memory_format=mem_fmt)
         targets = targets.to(device, non_blocking=True)
         preds = model(images).argmax(1)
         correct += (preds == targets).sum().item()
@@ -126,6 +136,8 @@ def main():
     model = build_model(num_classes=num_classes, patch_size=args.patch_size,
                         train_random_conv=args.train_random_conv,
                         num_blocks=args.num_blocks, attn_pool=args.attn_pool).to(device)
+    if args.channels_last:
+        model = model.to(memory_format=torch.channels_last)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr,
                                   weight_decay=args.weight_decay)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
@@ -154,12 +166,17 @@ def main():
         else:
             print(f"No checkpoint for '{run}' — starting fresh.")
 
+    # Compile after loading so checkpoints stay keyed to the original module
+    # (torch.compile shares the same parameters, so `model` remains the source of
+    # truth for state_dict save/load and the optimizer).
+    fwd_model = torch.compile(model) if args.compile else model
+
     best_state = None
     best_dirty = False
     for epoch in range(start_epoch, args.epochs):
-        loss = train_one_epoch(model, train_loader, optimizer, scaler,
-                               device, use_amp, epoch)
-        acc = validate(model, val_loader, device)
+        loss = train_one_epoch(fwd_model, train_loader, optimizer, scaler,
+                               device, use_amp, epoch, channels_last=args.channels_last)
+        acc = validate(fwd_model, val_loader, device, channels_last=args.channels_last)
         scheduler.step()
         lr = scheduler.get_last_lr()[0]
         print(f"epoch {epoch:3d} | loss {loss:.4f} | val_acc {acc:.4f} | lr {lr:.2e}")

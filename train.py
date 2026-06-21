@@ -17,7 +17,7 @@ from torch.amp import autocast, GradScaler
 from tqdm.auto import tqdm
 from huggingface_hub.utils import disable_progress_bars
 
-from data import build_loaders
+from data import DATASETS, build_loaders
 from model import build_model
 from hf_checkpoint import HFCheckpoint
 
@@ -31,6 +31,10 @@ def parse_args():
     p.add_argument("--batch-size", type=int, default=64)
     p.add_argument("--lr", type=float, default=3e-4)
     p.add_argument("--weight-decay", type=float, default=1e-4)
+    p.add_argument("--dataset", type=str, default="imagenette", choices=DATASETS,
+                   help="Which ImageNet proxy to train on. tiny-imagenet/imagenet-100 "
+                        "load from the HF Hub (need the 'datasets' library). "
+                        "tiny-imagenet is 64px — use --img-size 64 for it.")
     p.add_argument("--img-size", type=int, default=160)
     p.add_argument("--patch-size", type=int, default=8,
                    help="Square patch size; must divide --img-size (e.g. 8, 16, 32).")
@@ -115,9 +119,10 @@ def main():
     ckpt = HFCheckpoint(repo_id=args.out_repo, token=token)
 
     train_loader, val_loader, num_classes = build_loaders(
-        root=args.data_root, img_size=args.img_size,
+        root=args.data_root, dataset=args.dataset, img_size=args.img_size,
         batch_size=args.batch_size, num_workers=args.num_workers,
     )
+    print(f"Dataset: {args.dataset} | classes: {num_classes} | img_size: {args.img_size}")
     model = build_model(num_classes=num_classes, patch_size=args.patch_size,
                         train_random_conv=args.train_random_conv,
                         num_blocks=args.num_blocks, attn_pool=args.attn_pool).to(device)

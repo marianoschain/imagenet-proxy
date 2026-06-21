@@ -18,6 +18,9 @@ loss_fn = torch.nn.CrossEntropyLoss()
 loss = loss_fn(output, target)
 loss.backward()
 
-# Print parameter count
+# Print parameter counts
 total_params = sum(p.numel() for p in model.parameters())
-print(f"Parameter count: {total_params:,}")
+trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+fixed_params = total_params - trainable_params
+print(f"Parameter count: {total_params:,} "
+      f"(trainable: {trainable_params:,} | fixed: {fixed_params:,})")

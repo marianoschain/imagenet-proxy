@@ -1,8 +1,15 @@
+import argparse
+
 import torch
 from model import build_model
 
+parser = argparse.ArgumentParser()
+parser.add_argument("--num-blocks", type=int, default=4,
+                    help="Number of residual processing blocks.")
+args = parser.parse_args()
+
 # Create model
-model = build_model(num_classes=10)
+model = build_model(num_classes=10, num_blocks=args.num_blocks)
 model.train()
 
 # Create random batch and target

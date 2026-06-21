@@ -39,6 +39,9 @@ def parse_args():
     p.add_argument("--num-blocks", type=int, default=4,
                    help="Number of residual processing blocks; trainable params "
                         "scale ~linearly with this.")
+    p.add_argument("--attn-pool", action="store_true",
+                   help="Pool patches with learned attention weights instead of a "
+                        "plain mean (focuses on object-bearing patches).")
     p.add_argument("--num-workers", type=int, default=2)
     p.add_argument("--data-root", type=str, default="./data")
     p.add_argument("--out-repo", type=str, required=True,
@@ -113,7 +116,7 @@ def main():
     )
     model = build_model(num_classes=num_classes, patch_size=args.patch_size,
                         train_random_conv=args.train_random_conv,
-                        num_blocks=args.num_blocks).to(device)
+                        num_blocks=args.num_blocks, attn_pool=args.attn_pool).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr,
                                   weight_decay=args.weight_decay)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)

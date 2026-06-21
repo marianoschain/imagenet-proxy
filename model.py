@@ -57,13 +57,14 @@ class PatchBasedModel(nn.Module):
     """
 
     def __init__(self, num_classes=10, num_blocks=4, hidden_features=128, patch_size=8,
-                 train_random_conv=False):
+                 train_random_conv=False, attn_pool=False):
         super().__init__()
         self.num_classes = num_classes
         self.num_blocks = num_blocks
         self.hidden_features = hidden_features
         self.patch_size = patch_size
         self.train_random_conv = train_random_conv
+        self.attn_pool = attn_pool
 
         # Initial projection per patch: (3, H, W) -> (hidden_features, H, W)
         self.initial_proj = nn.Conv2d(3, hidden_features, kernel_size=1, padding=0)
@@ -82,6 +83,13 @@ class PatchBasedModel(nn.Module):
 
         # Final projection per patch
         self.final_proj = nn.Conv2d(hidden_features, hidden_features, kernel_size=1, padding=0)
+
+        # Optional attention pooling: score each patch, softmax over patches, and
+        # take a weighted sum instead of a plain mean. Lets the model focus on the
+        # patches that contain the object and down-weight background — making it
+        # robust to object scale/position rather than diluting signal across patches.
+        if attn_pool:
+            self.attn_score = nn.Linear(hidden_features, 1)
 
         # Classification head
         self.dropout = nn.Dropout(0.5)
@@ -131,9 +139,13 @@ class PatchBasedModel(nn.Module):
         # (B, num_patches, F, ph, pw) -> (B, num_patches, F)
         x = torch.mean(x, dim=(3, 4))  # Mean over patch spatial dims
 
-        # Average over patches
-        # (B, num_patches, F) -> (B, F)
-        x = torch.mean(x, dim=1)
+        # Pool over patches: (B, num_patches, F) -> (B, F)
+        if self.attn_pool:
+            # Weight patches by a learned, softmaxed score, then sum.
+            weights = torch.softmax(self.attn_score(x), dim=1)  # (B, num_patches, 1)
+            x = torch.sum(x * weights, dim=1)
+        else:
+            x = torch.mean(x, dim=1)  # Plain average over patches
 
         # Dropout and classification
         x = self.dropout(x)
@@ -172,7 +184,8 @@ class PatchBasedModel(nn.Module):
         return x
 
 
-def build_model(num_classes=10, patch_size=8, train_random_conv=False, num_blocks=4):
+def build_model(num_classes=10, patch_size=8, train_random_conv=False, num_blocks=4,
+                attn_pool=False):
     """Single entry point used by train.py.
 
     Args:
@@ -182,6 +195,10 @@ def build_model(num_classes=10, patch_size=8, train_random_conv=False, num_block
             instead of frozen (default: False).
         num_blocks: Number of residual processing blocks; trainable params scale
             ~linearly with this (default: 4).
+        attn_pool: If True, pool patches with learned attention weights instead of
+            a plain mean, letting the model focus on object-bearing patches
+            (default: False).
     """
     return PatchBasedModel(num_classes=num_classes, patch_size=patch_size,
-                           train_random_conv=train_random_conv, num_blocks=num_blocks)
+                           train_random_conv=train_random_conv, num_blocks=num_blocks,
+                           attn_pool=attn_pool)

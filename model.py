@@ -57,7 +57,7 @@ class PatchBasedModel(nn.Module):
     """
 
     def __init__(self, num_classes=10, num_blocks=4, hidden_features=128, patch_size=8,
-                 train_random_conv=False, attn_pool=False, downsample=1):
+                 train_random_conv=False, attn_pool=False, downsample=1, aux_heads=False):
         super().__init__()
         self.num_classes = num_classes
         self.num_blocks = num_blocks
@@ -65,6 +65,7 @@ class PatchBasedModel(nn.Module):
         self.patch_size = patch_size
         self.train_random_conv = train_random_conv
         self.attn_pool = attn_pool
+        self.aux_heads = aux_heads
 
         # Initial projection per patch: (3, H, W) -> (hidden_features, H, W)
         self.initial_proj = nn.Conv2d(3, hidden_features, kernel_size=1, padding=0)
@@ -102,6 +103,55 @@ class PatchBasedModel(nn.Module):
         # Classification head
         self.dropout = nn.Dropout(0.5)
         self.classifier = nn.Linear(hidden_features, num_classes)
+
+        # Per-layer auxiliary heads for greedy layer-wise training: one classifier
+        # (and, if attn pooling, one patch-scorer) attached to each block's output.
+        if aux_heads:
+            self.aux_classifiers = nn.ModuleList(
+                [nn.Linear(hidden_features, num_classes) for _ in range(num_blocks)])
+            self.aux_attn = (nn.ModuleList(
+                [nn.Linear(hidden_features, 1) for _ in range(num_blocks)])
+                if attn_pool else None)
+        else:
+            self.aux_classifiers = None
+            self.aux_attn = None
+
+    def _pool_layer(self, x, batch_size, num_patches, idx):
+        """Pool a block's output (B*num_patches, F, ph, pw) to (B, F): mean over
+        the patch's spatial dims, then mean/attention over patches."""
+        _, C, ph, pw = x.shape
+        x = x.reshape(batch_size, num_patches, C, ph, pw)
+        x = x.mean(dim=(3, 4))  # (B, num_patches, F)
+        if self.attn_pool:
+            weights = torch.softmax(self.aux_attn[idx](x), dim=1)
+            x = torch.sum(x * weights, dim=1)
+        else:
+            x = x.mean(dim=1)
+        return x
+
+    def layer_logits(self, x, up_to=None):
+        """Run the stem + first `up_to` blocks and return a list of per-block
+        logits from the auxiliary heads (used by greedy layer-wise training).
+        With up_to=None, runs all blocks. The last entry is the deepest head."""
+        assert self.aux_classifiers is not None, "build with aux_heads=True"
+        n = self.num_blocks if up_to is None else up_to
+
+        batch_size, _, H, W = x.shape
+        patches = self._extract_patches(x, self.patch_size)
+        batch_size, num_patches, _, patch_h, patch_w = patches.shape
+        h = self.initial_proj(patches.reshape(batch_size * num_patches, 3, patch_h, patch_w))
+        if self.downsample is not None:
+            h = self.downsample(h)
+
+        logits = []
+        for i in range(n):
+            residual = h
+            h = self.blocks[i](h)
+            h = self.batch_norms[i](h)
+            h = F.relu(h + residual)
+            pooled = self._pool_layer(h, batch_size, num_patches, i)
+            logits.append(self.aux_classifiers[i](self.dropout(pooled)))
+        return logits
 
     def forward(self, x):
         """
@@ -197,7 +247,7 @@ class PatchBasedModel(nn.Module):
 
 
 def build_model(num_classes=10, patch_size=8, train_random_conv=False, num_blocks=4,
-                attn_pool=False, hidden_features=128, downsample=1):
+                attn_pool=False, hidden_features=128, downsample=1, aux_heads=False):
     """Single entry point used by train.py.
 
     Args:
@@ -214,8 +264,11 @@ def build_model(num_classes=10, patch_size=8, train_random_conv=False, num_block
             square of this, so halving it (128 -> 64) cuts FLOPs ~4x (default: 128).
         downsample: Spatial downsampling factor applied before the conv blocks;
             >1 cuts per-block FLOPs ~quadratically (default: 1, i.e. none).
+        aux_heads: If True, attach a classifier head to every block's output and
+            expose layer_logits(); required for greedy layer-wise training
+            (default: False).
     """
     return PatchBasedModel(num_classes=num_classes, patch_size=patch_size,
                            train_random_conv=train_random_conv, num_blocks=num_blocks,
                            attn_pool=attn_pool, hidden_features=hidden_features,
-                           downsample=downsample)
+                           downsample=downsample, aux_heads=aux_heads)
